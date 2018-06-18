@@ -1,0 +1,89 @@
+#$ -S /bin/bash
+#$ -N expl_2jlo_in2occ
+#$ -cwd -j y -R y -r y
+#$ -l h_rt=23:55:00
+#$ -pe singlenode 8
+
+#------------------------------
+# user defined variables
+#------------------------------
+DEFFNM=mhp1_in2occ
+INPUT=$DEFFNM.inp
+OUTPUT=$DEFFNM.out
+TRANS_FRAME=$(ls -l last_frame_* | awk '{print $9}' | cut -c 12- | sed 's/....$//' | sort -n| tail -n1)
+
+INITIAL=last_frame_${TRANS_FRAME}.crd
+TARGET=occ_mini_mhp1.crd
+PSF=step5_assembly.psf
+GBSW=radius_gbsw.str
+GET_FRAME=get_frame.py
+
+echo ${TRANS_FRAME}
+DPHI="1E-5"
+START=$((TRANS_FRAME+1))
+END=100
+
+RUNFILES="*"
+#------------------------------
+
+# set up scratch directory
+WORK=/scratch/${USER}/WORK/${JOB_ID}
+ORIG=$PWD
+echo $HOST
+echo $HOSTNAME
+
+copy_success="False"
+
+function setup_workdir () {
+    echo "-- [$(date)] setting up $WORK"
+    echo "-- Runfiles = $RUNFILES"
+    mkdir -p $WORK
+    test -d $WORK || { echo "EE ERROR: Failed to make tmpdir"; exit 2; }
+    cp -v -r $RUNFILES $WORK || { echo "EE ERROR: nothing copied from $ORIG to $WORK"; exit 2; }
+
+    copy_success="True"
+}
+
+function cleanup_exit () {
+    # ensure that we don't overwrite complete files with partial ones if job killed mid-copy
+    if [ "$copy_success" = "True" ]; then
+        echo "-- [$(date)] cleaning up: $WORK --> $ORIG"
+        cp -r -v $WORK/* $ORIG || { echo "EE ERROR: Did not copy $WORK --- check manually!"; exit 1; }
+    elif [ "$copy_success" = "False" ]; then
+        echo "-- [$(date)] cleaning up: $WORK; NOT COPYING BACK PARTIALLY COPIED FILES"
+    fi
+    cd $ORIG
+    rm -r $WORK
+    exit 0
+}
+
+# make sure that killing the job copies back everything
+# (GE must be configured to use SIGTERM for killing jobs!)
+trap -- "cleanup_exit" TERM
+
+# write out local delscratch script for deleting data from scratch
+echo "ssh ${USER}@${HOSTNAME} rm -r ${WORK}" > ${ORIG}/delscratch.sh
+chmod u+x ${ORIG}/delscratch.sh
+
+setup_workdir
+cd $WORK || { echo "EE ERROR: failed to cd $WORK"; exit 2; }
+
+(echo "--Job Start Time: $(eval date)"
+echo "--$HOSTNAME; ${USER}"
+echo "--${JOB_ID}") >> record.txt
+
+(echo "----------------------------"
+echo ">> IF to OCC (if2occ)"
+echo "----------------------------") >> record.txt
+
+. /nfs/packages/modules/init
+module load charmm/c41b2-free/any/dims/intel13.0/64
+
+
+mpirun -n 8 charmm ISTEP=0 SEED=$RANDOM DPHI=$DPHI < $INPUT > ${OUTPUT}.log
+
+
+echo "-- [$(date)] finished MD"
+
+
+cleanup_exit
